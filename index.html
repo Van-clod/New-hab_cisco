@@ -1,0 +1,457 @@
+<!doctype html><html lang="uk"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#101923"><title>NetLab Pocket</title><style>
+*{box-sizing:border-box}body{margin:0;background:#101923;color:#eef4fb;font:16px system-ui,sans-serif}main{max-width:1250px;margin:auto;padding:clamp(12px,3vw,32px)}header{display:flex;align-items:center;gap:12px;margin:0 0 22px}header b{background:#7fffd0;color:#112522;border-radius:9px;padding:9px;font-family:monospace}h1{font-size:23px;margin:0}small,.hint{color:#a8b8cb}small{font-size:13px}.layout{display:grid;grid-template-columns:minmax(0,1.55fr) minmax(320px,1fr);gap:16px}section{min-width:0;background:#162230;border:1px solid #2d4155;border-radius:14px;padding:13px}h2{font-size:17px;margin:0 0 12px}.bar{display:flex;flex-wrap:wrap;gap:7px}button,input,select{font:inherit;color:inherit;background:#203447;border:1px solid #435c74;border-radius:8px;padding:9px;min-height:44px}button{cursor:pointer}button:hover,button[aria-pressed=true]{border-color:#7fffd0}button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid #7fffd0;outline-offset:2px}.accent{background:#7fffd0;color:#112522;font-weight:700}.hint{font-size:14px;margin:9px 0;min-height:20px}#board{height:clamp(245px,40vh,440px);position:relative;overflow:hidden;border:1px solid #33495d;border-radius:10px;background:radial-gradient(#405469 1px,transparent 1px) 0 0/18px 18px,#101a26}#wires{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}.wire{stroke:#62809f;stroke-width:2;vector-effect:non-scaling-stroke}.wire.active{stroke:#7fffd0;stroke-width:4}.node{position:absolute;transform:translate(-50%,-50%);background:#203447;font-size:13px;padding:5px 7px;min-width:54px;touch-action:none;user-select:none;white-space:nowrap}.node strong{display:block;font-size:17px;color:#7fffd0}.node[aria-pressed=true]{background:#30534f}form{display:flex;flex-wrap:wrap;gap:7px;margin-top:10px}form label{font-size:14px;flex:1;min-width:120px}form label input,form label select{display:block;width:100%;margin-top:4px}.row{flex-basis:100%}#log{margin:0;background:#0b131c;border-radius:8px;padding:12px;min-height:170px;height:clamp(170px,34vh,370px);overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;color:#a2f2d5;font:14px/1.5 monospace}#command{flex:1;min-width:100px;background:#0b131c;font-family:monospace}summary{cursor:pointer;margin-top:10px}code{color:#a2f2d5} [hidden]{display:none!important}@media(max-width:790px){.layout{grid-template-columns:1fr}}
+</style></head><body><main><header><b aria-hidden="true">&gt;_</b><div><h1>NetLab Pocket</h1><small>Симулятор комп’ютерних мереж</small></div></header><div class="layout">
+<section><h2>Схема мережі</h2><div class="bar"><button data-add="PC">+ ПК</button><button data-add="SW">+ Комутатор</button><button data-add="R">+ Маршрутизатор</button><button id="cable" aria-pressed="false">З’єднати</button></div><p class="hint" id="hint" aria-live="polite"></p><div id="board"><svg id="wires" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true"></svg><div id="nodes"></div></div>
+<form id="settings"><label>Інтерфейс<select id="port"></select></label><label>IPv4<input id="ip" placeholder="192.168.1.10" autocomplete="off"></label><label>Маска<input id="mask" placeholder="255.255.255.0" autocomplete="off"></label><label id="gateway-label">Шлюз<input id="gateway" placeholder="192.168.1.1" autocomplete="off"></label><div class="bar row"><button class="accent" id="apply">Застосувати</button><button type="button" id="remove">Видалити пристрій</button></div></form><div id="links" class="bar" style="margin-top:10px"></div>
+</section><section><h2 id="terminal">Термінал</h2><pre id="log" tabindex="0" aria-label="Вивід команд"></pre><form id="cli"><input id="command" aria-label="Команда" placeholder="ping 192.168.1.20" autocapitalize="off" autocomplete="off" spellcheck="false" enterkeyhint="send"><button class="accent">Виконати</button></form><details><summary>Команди й скорочення</summary>
+<p>Введи <code>?</code>, щоб побачити команди поточного режиму, або <code>show ?</code>, щоб побачити продовження. Кожне слово можна скоротити до однозначного префікса.</p>
+<p>Вхід у налаштування: <code>en</code>, <code>conf t</code>, <code>int g0/0</code>.</p>
+<p>Діагностика: <code>sh ip int br</code>, <code>sh int g0/0</code>, <code>sh int desc</code>, <code>sh run</code>, <code>sh ip ro</code>. У режимі налаштування спробуй <code>do sh ip int br</code>.</p>
+<p>Порт: <code>desc До комутатора</code>, <code>shut</code>, <code>no shut</code>, <code>no desc</code>. На маршрутизаторі можна видалити адресу через <code>no ip add</code> або статичний маршрут через <code>no ip ro МЕРЕЖА МАСКА ШЛЮЗ</code>.</p>
+<p>Для швидкої перевірки вибери PC1 і виконай <code>ping 192.168.1.20</code>.</p></details></section></div></main><script>
+'use strict';
+const ipv4 = value => /^(0|[1-9]\d{0,2})(\.(0|[1-9]\d{0,2})){3}$/.test(value) && value.split('.').every(part => Number(part) <= 255);
+const number = value => value.split('.').reduce((result, octet) => result * 256 + Number(octet), 0) >>> 0;
+const netmask = value => ipv4(value) && /^1*0*$/.test(number(value).toString(2).padStart(32, '0'));
+const sameNetwork = (a, b, mask) => (number(a) & number(mask)) === (number(b) & number(mask));
+const prefix = mask => number(mask).toString(2).replace(/0/g, '').length;
+
+function device(type, name, x, y) {
+  const names = {PC:['eth0'], SW:Array.from({length:8}, (_, i) => 'fa0/' + (i + 1)), R:['g0/0','g0/1','g0/2']};
+  return {name,type,x,y,gateway:'',routes:[],ports:names[type].map(name => ({name,ip:'',mask:'',up:type !== 'R'}))};
+}
+
+function simulate(nodes, links, source, target) {
+  const active = Object.entries(nodes).flatMap(([id, node]) => node.ports.filter(port => port.up && port.ip).map(port => ({id,node,port})));
+  const destination = active.find(entry => entry.port.ip === target);
+  const path = new Set();
+  if (!destination) return {path, message:'IP-адресу ' + target + ' не призначено активному інтерфейсу.'};
+
+  function segment(start, address) {
+    const queue = [{id:start.id, port:start.port, hops:[]}];
+    const visited = new Set();
+    while (queue.length) {
+      const {id, port, hops} = queue.shift();
+      if (visited.has(id)) continue;
+      visited.add(id);
+      for (const [index, cable] of links.entries()) {
+        const local = cable.find(end => end.id === id && (!port || end.port === port.name));
+        if (!local) continue;
+        const remote = cable.find(end => end !== local);
+        const node = nodes[remote.id];
+        const remotePort = node.ports.find(entry => entry.name === remote.port);
+        if (!remotePort.up || visited.has(remote.id)) continue;
+        const nextHops = [...hops, index];
+        if (remotePort.ip === address) return {id:remote.id,node,port:remotePort,hops:nextHops};
+        if (node.type === 'SW') queue.push({id:remote.id,port:null,hops:nextHops});
+      }
+    }
+  }
+
+  function travel(start, address) {
+    const visited = new Set();
+    let id = start;
+    while (!visited.has(id)) {
+      visited.add(id);
+      const node = nodes[id];
+      const interfaces = active.filter(entry => entry.id === id);
+      if (interfaces.some(entry => entry.port.ip === address)) return '';
+      if (!interfaces.length) return node.name + ' не має активного інтерфейсу з IPv4.';
+      const connected = interfaces.filter(({port}) => sameNetwork(port.ip,address,port.mask));
+      connected.sort((a,b) => prefix(b.port.mask) - prefix(a.port.mask));
+      let output = connected[0];
+      let next = address;
+      if (!output) {
+        const routes = node.routes.filter(route => sameNetwork(address,route.network,route.mask));
+        routes.sort((a,b) => prefix(b.mask) - prefix(a.mask));
+        next = node.type === 'PC' ? node.gateway : routes[0]?.next;
+        output = interfaces.find(({port}) => next && sameNetwork(port.ip,next,port.mask));
+        if (!output) return node.name + ' не має маршруту або доступного шлюзу до ' + address + '. Перевір маску, шлюз і маршрути.';
+      }
+      const hop = segment(output,next);
+      if (!hop) return node.name + ' не може дістатися до ' + next + '. Перевір кабелі та стан портів.';
+      hop.hops.forEach(index => path.add(index));
+      if (next === address) return '';
+      if (hop.node.type !== 'R') return hop.node.name + ' не маршрутизує пакети.';
+      id = hop.id;
+    }
+    return 'Виявлено петлю маршрутизації.';
+  }
+
+  const requestError = travel(source,target);
+  if (requestError) return {path,message:requestError};
+  const origin = active.filter(entry => entry.id === source);
+  const requestPort = origin.find(({port}) => sameNetwork(port.ip,target,port.mask)) ||
+    origin.find(({port}) => path.size && links[[...path][0]].some(end => end.id === source && end.port === port.name)) || origin[0];
+  const replyError = travel(destination.id,requestPort.port.ip);
+  return {path,message:replyError ? 'Відповідь не повернулася. ' + replyError : 'Відповідь від ' + target + ' · зв’язок працює.'};
+}
+</script><script>
+'use strict';
+const $ = id => document.getElementById(id);
+const storageKey = 'netlab-pocket-v1';
+const sample = {
+  nodes:{a:device('PC','PC1',17,26),b:device('SW','SW1',50,54),c:device('PC','PC2',83,26)},
+  links:[[{id:'a',port:'eth0'},{id:'b',port:'fa0/1'}],[{id:'b',port:'fa0/2'},{id:'c',port:'eth0'}]]
+};
+Object.assign(sample.nodes.a.ports[0],{ip:'192.168.1.10',mask:'255.255.255.0'});
+Object.assign(sample.nodes.c.ports[0],{ip:'192.168.1.20',mask:'255.255.255.0'});
+let lab = sample;
+try { lab = JSON.parse(localStorage.getItem(storageKey)) || sample; } catch {}
+let selected = Object.keys(lab.nodes)[0];
+let portName = '';
+let cableMode = false;
+let cableStart;
+let highlighted = new Set();
+const consoles = {};
+const icons = {PC:'▣',SW:'⇄',R:'✥'};
+const session = () => consoles[selected] ??= {mode:'>',port:'',log:[]};
+function save() {
+  try { localStorage.setItem(storageKey,JSON.stringify(lab)); } catch {}
+}
+function linksOnBoard() {
+  $('wires').replaceChildren(...lab.links.map(([a,b],index) => {
+    const line = document.createElementNS('http://www.w3.org/2000/svg','line');
+    for (const [end,suffix] of [[a,1],[b,2]]) {
+      line.setAttribute('x'+suffix,lab.nodes[end.id].x);
+      line.setAttribute('y'+suffix,lab.nodes[end.id].y);
+    }
+    line.setAttribute('class',highlighted.has(index) ? 'wire active' : 'wire');
+    return line;
+  }));
+}
+function selectNode(id) {
+  if (!cableMode) {
+    selected = id;
+    portName = '';
+    render();
+    return;
+  }
+  if (!cableStart || cableStart === id) {
+    cableStart = cableStart === id ? undefined : id;
+    render();
+    return;
+  }
+  const first = cableStart;
+  const available = deviceId => lab.nodes[deviceId].ports.find(port =>
+    !lab.links.some(link => link.some(end => end.id === deviceId && end.port === port.name)));
+  const a = available(first), b = available(id);
+  cableStart = undefined;
+  cableMode = false;
+  if (a && b) {
+    lab.links.push([{id:first,port:a.name},{id,port:b.name}]);
+    highlighted.clear();
+    save();
+  }
+  render();
+  if (!a || !b) $('hint').textContent = 'Один із пристроїв не має вільних портів.';
+}
+function render() {
+  const node = lab.nodes[selected];
+  $('hint').textContent = cableMode
+    ? (cableStart ? 'Вибери другий пристрій.' : 'Вибери перший пристрій.')
+    : 'Торкнися пристрою для налаштування або перетягни його.';
+  $('cable').setAttribute('aria-pressed',cableMode);
+  linksOnBoard();
+  $('nodes').replaceChildren(...Object.entries(lab.nodes).map(([id,item]) => {
+    const button = document.createElement('button');
+    button.className = 'node';
+    button.setAttribute('aria-pressed',id === (cableMode ? cableStart : selected));
+    const icon = document.createElement('strong');
+    icon.textContent = icons[item.type];
+    icon.setAttribute('aria-hidden','true');
+    button.append(icon,item.name);
+    const position = () => {
+      button.style.left = item.x + '%';
+      button.style.top = item.y + '%';
+    };
+    position();
+    let origin, dragged = false;
+    button.onpointerdown = event => {
+      origin = {x:event.clientX,y:event.clientY,nodeX:item.x,nodeY:item.y};
+      dragged = false;
+      button.setPointerCapture(event.pointerId);
+    };
+    button.onpointermove = event => {
+      if (!origin || cableMode) return;
+      const dx = event.clientX - origin.x, dy = event.clientY - origin.y;
+      if (!dragged && Math.hypot(dx,dy) < 5) return;
+      dragged = true;
+      const rect = $('board').getBoundingClientRect();
+      const marginX = Math.min(49, 50 * button.offsetWidth / rect.width);
+      const marginY = 50 * button.offsetHeight / rect.height;
+      item.x = Math.max(marginX,Math.min(100-marginX,origin.nodeX+100*dx/rect.width));
+      item.y = Math.max(marginY,Math.min(100-marginY,origin.nodeY+100*dy/rect.height));
+      position();
+      linksOnBoard();
+    };
+    button.onpointerup = button.onpointercancel = () => {
+      origin = undefined;
+      if (dragged) save();
+    };
+    button.onclick = event => {
+      if (!dragged || event.detail === 0) selectNode(id);
+    };
+    return button;
+  }));
+  $('settings').hidden = !node;
+  $('cli').hidden = !node;
+  $('terminal').textContent = node ? 'Термінал · ' + node.name : 'Термінал';
+  $('log').textContent = node ? [...session().log,promptFor()].join('\n') : 'Додай пристрій, щоб відкрити термінал.';
+  $('log').scrollTop = $('log').scrollHeight;
+  $('links').replaceChildren();
+  if (!node) return;
+  $('port').replaceChildren(...node.ports.map(port => new Option(port.name,port.name)));
+  $('port').value = node.ports.some(port => port.name === portName) ? portName : node.ports[0].name;
+  renderPort();
+  for (const [index,link] of lab.links.entries()) {
+    const end = link.find(end => end.id === selected);
+    if (!end) continue;
+    const other = link.find(entry => entry !== end);
+    const button = document.createElement('button');
+    button.textContent = 'Від’єднати ' + end.port + ' · ' + lab.nodes[other.id].name;
+    button.onclick = () => { lab.links.splice(index,1); highlighted.clear(); save(); render(); };
+    $('links').append(button);
+  }
+}
+function renderPort() {
+  const node = lab.nodes[selected];
+  portName = $('port').value;
+  const port = node.ports.find(entry => entry.name === portName);
+  $('ip').value = port.ip;
+  $('mask').value = port.mask;
+  $('gateway').value = node.gateway;
+  $('gateway-label').hidden = node.type !== 'PC';
+  $('ip').disabled = $('mask').disabled = $('apply').disabled = node.type === 'SW';
+}
+function promptFor() {
+  const node = lab.nodes[selected];
+  return node.name + (node.type === 'PC' ? '>' : session().mode);
+}
+function configureAddress(port, ip, mask) {
+  if ((ip || mask) && !(ipv4(ip) && netmask(mask))) return 'Введи коректні IPv4-адресу й маску.';
+  port.ip = ip;
+  port.mask = mask;
+  return '';
+}
+const execCommands = [
+  'ping <IP>', 'show ip interface brief', 'show interfaces', 'show interfaces <порт>', 'exit'
+];
+const globalCommands = ['hostname <ім’я>', 'interface <порт>', 'end', 'exit', 'do <команда...>'];
+const portCommands = [
+  'interface <порт>', 'description <текст...>', 'no description',
+  'shutdown', 'no shutdown', 'end', 'exit', 'do <команда...>'
+];
+
+function availableCommands(node, mode) {
+  if (node.type === 'PC') return ['ipconfig', 'ping <IP>'];
+  const router = node.type === 'R';
+  if (mode === '(config)#') return [
+    ...globalCommands,
+    ...(router ? ['ip route <мережа> <маска> <шлюз>', 'no ip route <мережа> <маска> <шлюз>'] : [])
+  ];
+  if (mode === '(config-if)#') return [
+    ...portCommands, ...(router ? ['ip address <IP> <маска>', 'no ip address'] : [])
+  ];
+  return [
+    ...execCommands, ...(router ? ['show ip route'] : []),
+    ...(mode === '>' ? ['enable'] : ['configure terminal', 'disable', 'show running-config', 'show interfaces description'])
+  ];
+}
+
+function parseCommand(raw, commands) {
+  const help = raw.endsWith('?');
+  const input = (help ? raw.slice(0, -1) : raw).trim().split(/\s+/).filter(Boolean);
+  let candidates = commands.map(command => ({command, words:command.split(' ')}));
+  const args = [];
+  for (const [index, value] of input.entries()) {
+    const key = value.toLowerCase();
+    const exact = candidates.filter(({words}) => words[index] === key);
+    const prefixes = candidates.filter(({words}) => words[index] && !words[index].startsWith('<') && words[index].startsWith(key));
+    const values = candidates.filter(({words}) => words[index]?.startsWith('<'));
+    if (exact.length) candidates = exact;
+    else if (prefixes.length) {
+      const keywords = [...new Set(prefixes.map(({words}) => words[index]))].sort();
+      if (keywords.length > 1 && !help) return {error:'Неоднозначне скорочення «' + value + '». Варіанти: ' + keywords.join(', ') + '.'};
+      candidates = prefixes;
+    } else if (values.length) {
+      candidates = values;
+      if (values.every(({words}) => words[index].endsWith('...>'))) {
+        args.push(input.slice(index).join(' '));
+        break;
+      }
+      args.push(value);
+    } else return {error:'Команда недоступна в цьому режимі або має помилку. Введи ? для довідки.'};
+  }
+  if (help && !(args.length && candidates[0].words[0] === 'do')) return {error:candidates.map(({command}) => command).join('\n')};
+  if (help) args[0] += ' ?';
+  const match = candidates.find(({words}) => words.length === input.length ||
+    (words.length <= input.length && words[words.length - 1].endsWith('...>')));
+  return match ? {name:match.words.filter(word => !word.startsWith('<')).join(' '),args}
+    : {error:'Неповна команда. Варіанти: ' + candidates.map(({command}) => command).join(', ') + '.'};
+}
+
+function findPort(node, name) {
+  const normalized = name.toLowerCase().replace(/^gi(?:gabitethernet)?(?=\d)/,'g')
+    .replace(/^fastethernet(?=\d)/,'fa');
+  return node.ports.find(port => port.name === normalized);
+}
+
+function portStatus(port) {
+  if (!port.up) return 'administratively down';
+  const cable = lab.links.find(link => link.some(end => end.id === selected && end.port === port.name));
+  const remote = cable?.find(end => end.id !== selected);
+  return remote && findPort(lab.nodes[remote.id],remote.port).up ? 'up' : 'down';
+}
+
+function run(raw, mode = session().mode, commandSet) {
+  const node = lab.nodes[selected], state = session();
+  const {name,args,error} = parseCommand(raw,commandSet || availableCommands(node,mode));
+  if (error) return error;
+  const [first,second,third] = args;
+  const port = node.ports.find(entry => entry.name === state.port);
+  switch (name) {
+    case 'ping': {
+      if (!ipv4(first)) return 'Введи IPv4-адресу для ping.';
+      const result = simulate(lab.nodes,lab.links,selected,first);
+      highlighted = result.path;
+      return result.message;
+    }
+    case 'ipconfig': {
+      const [nic] = node.ports;
+      return 'IPv4: ' + (nic.ip || '—') + '\nМаска: ' + (nic.mask || '—') + '\nШлюз: ' + (node.gateway || '—');
+    }
+    case 'enable':
+      state.mode = '#';
+      return '';
+    case 'configure terminal':
+      state.mode = '(config)#';
+      return '';
+    case 'disable':
+      state.mode = '>';
+      return '';
+    case 'end':
+      state.mode = '#';
+      return '';
+    case 'exit':
+      state.mode = {'(config-if)#':'(config)#','(config)#':'#','#':'>','>':'>'}[mode];
+      return '';
+    case 'do':
+      return run(first,'#',availableCommands(node,'#').filter(command =>
+        command.startsWith('show ') || command.startsWith('ping ')));
+    case 'show ip interface brief':
+      return ['Interface  IP-Address        Status',...node.ports.map(entry =>
+        entry.name.padEnd(11) + (entry.ip || 'unassigned').padEnd(18) + portStatus(entry))].join('\n');
+    case 'show interfaces': {
+      const chosen = first ? findPort(node,first) : null;
+      if (first && !chosen) return 'Інтерфейс не знайдено. Доступні: ' + node.ports.map(entry => entry.name).join(', ') + '.';
+      return (chosen ? [chosen] : node.ports).map(entry => [
+        entry.name + ' is ' + portStatus(entry), entry.description && '  Description: ' + entry.description,
+        entry.ip && '  Internet address: ' + entry.ip + '/' + prefix(entry.mask)
+      ].filter(Boolean).join('\n')).join('\n');
+    }
+    case 'show interfaces description':
+      return ['Interface  Status                 Description', ...node.ports.map(entry =>
+        entry.name.padEnd(11) + portStatus(entry).padEnd(23) + (entry.description || ''))].join('\n');
+    case 'show running-config': {
+      const ports = node.ports.map(entry => [
+        'interface ' + entry.name, entry.description && ' description ' + entry.description,
+        entry.ip && ' ip address ' + entry.ip + ' ' + entry.mask, entry.up ? ' no shutdown' : ' shutdown'
+      ].filter(Boolean).join('\n'));
+      return ['hostname '+node.name,...ports,...node.routes.map(route => 'ip route '+route.network+' '+route.mask+' '+route.next)].join('\n');
+    }
+    case 'hostname':
+      if (!/^[a-z0-9-]{1,18}$/i.test(first)) return 'Введи до 18 латинських літер, цифр або дефісів.';
+      node.name = first;
+      return '';
+    case 'show ip route':
+      return [...node.ports.filter(entry => entry.up && entry.ip).map(entry => 'C  ' + entry.ip.split('.').map((octet,i) => Number(octet) & Number(entry.mask.split('.')[i])).join('.') + '/' + prefix(entry.mask) + ' · ' + entry.name),...node.routes.map(route => 'S  '+route.network+'/'+prefix(route.mask)+' via '+route.next)].join('\n') || 'Таблиця маршрутів порожня.';
+    case 'interface': {
+      const chosen = findPort(node,first);
+      if (!chosen) return 'Інтерфейс не знайдено. Доступні: ' + node.ports.map(entry => entry.name).join(', ') + '.';
+      state.mode = '(config-if)#';
+      state.port = portName = chosen.name;
+      return '';
+    }
+    case 'description':
+    case 'no description':
+      port.description = first || '';
+      return '';
+    case 'shutdown':
+    case 'no shutdown':
+      port.up = name === 'no shutdown';
+      return '';
+    case 'ip address':
+      return configureAddress(port,first,second);
+    case 'no ip address':
+      return configureAddress(port,'','');
+    case 'ip route':
+    case 'no ip route':
+      if (!ipv4(first) || !netmask(second) || !ipv4(third) || ((number(first) & number(second)) >>> 0) !== number(first)) return 'Введи адресу мережі, маску і IPv4 наступного маршрутизатора.';
+      node.routes = node.routes.filter(route => route.network !== first || route.mask !== second || (name === 'no ip route' && route.next !== third));
+      if (name === 'ip route') node.routes.push({network:first,mask:second,next:third});
+      return '';
+  }
+}
+
+document.querySelectorAll('[data-add]').forEach(button => {
+  button.onclick = () => {
+    const type = button.dataset.add;
+    let index = 1;
+    while (Object.values(lab.nodes).some(node => node.name === type+index)) index++;
+    const count = Object.keys(lab.nodes).length;
+    const id = crypto.randomUUID?.() || Date.now().toString(36) + Math.random().toString(36).slice(2);
+    lab.nodes[id] = device(type,type+index,18+(count*23)%65,26+(count*19)%55);
+    selected = id;
+    portName = '';
+    cableMode = false;
+    cableStart = undefined;
+    save();
+    render();
+  };
+});
+$('cable').onclick = () => { cableMode = !cableMode; cableStart = undefined; render(); };
+$('port').onchange = renderPort;
+$('settings').onsubmit = event => {
+  event.preventDefault();
+  const node = lab.nodes[selected];
+  if (node.type === 'SW') return;
+  const gateway = $('gateway').value.trim();
+  if (node.type === 'PC' && gateway && !ipv4(gateway)) { $('hint').textContent = 'Введи коректну IPv4-адресу шлюзу.'; return; }
+  const port = node.ports.find(entry => entry.name === portName);
+  const error = configureAddress(port,$('ip').value.trim(),$('mask').value.trim());
+  if (error) { $('hint').textContent = error; return; }
+  if (node.type === 'PC') node.gateway = gateway;
+  else port.up = true;
+  highlighted.clear();
+  save();
+  render();
+  $('hint').textContent = 'Налаштування збережено.';
+};
+$('remove').onclick = () => {
+  lab.links = lab.links.filter(link => !link.some(end => end.id === selected));
+  delete lab.nodes[selected];
+  delete consoles[selected];
+  selected = Object.keys(lab.nodes)[0];
+  portName = '';
+  cableStart = undefined;
+  highlighted.clear();
+  save();
+  render();
+};
+$('cli').onsubmit = event => {
+  event.preventDefault();
+  const raw = $('command').value.trim();
+  if (!raw) return;
+  const state = session();
+  state.log.push(promptFor() + ' ' + raw);
+  highlighted.clear();
+  const output = run(raw);
+  if (output) state.log.push(output);
+  state.log = state.log.slice(-100);
+  $('command').value = '';
+  save();
+  render();
+};
+render();
+</script></body></html>
